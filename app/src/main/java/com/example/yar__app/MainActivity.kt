@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.provider.MediaStore
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.video.Recorder
@@ -35,6 +36,7 @@ import okhttp3.Request
 import okhttp3.RequestBody
 import okhttp3.Response
 import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -142,7 +144,8 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             }
-    }private fun uploadVideo(videoUri: Uri) {
+    }
+    private fun uploadVideo(videoUri: Uri) {
         Log.d(TAG, "Starting upload for video URI: $videoUri")
 
         try {
@@ -191,6 +194,14 @@ class MainActivity : AppCompatActivity() {
                         Log.d(TAG, "Response body: $responseBody")
                         if (response.isSuccessful) {
                             Log.d(TAG, "Upload successful. Response code: ${response.code}")
+                            if(response.header("Content-Type") == "audio/mpeg"){
+                                saveAudioFromResponse(response)
+                            }else{
+                                Log.e(TAG, "Unexpected content type Code: ${response.code}")
+                                runOnUiThread {
+                                    Toast.makeText(baseContext, "Received unexpected content type: ${response.code} ${response.message}", Toast.LENGTH_LONG).show()
+                                }
+                            }
                             runOnUiThread {
                                 Toast.makeText(baseContext, "Video uploaded successfully", Toast.LENGTH_SHORT).show()
                             }
@@ -236,6 +247,48 @@ class MainActivity : AppCompatActivity() {
                 Log.e(TAG,"Use case binding failed",exc)
             }
         },ContextCompat.getMainExecutor((this)))
+    }
+    private fun saveAudioFromResponse(response: Response){
+        val fileName = "audio_${System.currentTimeMillis()}.mp3"
+        try{
+            if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q){
+                val contentValues = ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME,fileName)
+                    put(MediaStore.MediaColumns.MIME_TYPE,"audio/mpeg")
+                    put(MediaStore.MediaColumns.RELATIVE_PATH,Environment.DIRECTORY_MUSIC)
+                }
+
+                val resolver = applicationContext.contentResolver
+                val uri = resolver.insert(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, contentValues)
+
+                uri?.let {
+                    resolver.openOutputStream(it)?.use { outputStream ->
+                        response.body?.byteStream()?.use { inputStream ->
+                            inputStream.copyTo(outputStream)
+                        }
+                    }
+                    Log.d(TAG, "Audio saved successfully: $uri")
+                    runOnUiThread {
+                        Toast.makeText(baseContext, "Audio saved successfully", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            } else {
+            val file = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC), fileName)
+            FileOutputStream(file).use { outputStream ->
+                response.body?.byteStream()?.use { inputStream ->
+                    inputStream.copyTo(outputStream)
+                }
+            }
+            Log.d(TAG, "Audio saved successfully: ${file.absolutePath}")
+            runOnUiThread {
+                Toast.makeText(baseContext, "Audio saved successfully", Toast.LENGTH_SHORT).show()
+            }
+        }
+        }catch(e: IOException){
+            Log.e(TAG,"Error saving audio file",e)
+
+        }
+
     }
     private fun requestPermissions(){
         activityResultLauncher.launch(REQUIRED_PERMISSIONS)
