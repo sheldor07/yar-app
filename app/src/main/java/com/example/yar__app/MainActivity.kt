@@ -4,6 +4,7 @@ import com.example.yar__app.databinding.ActivityMainBinding
 import android.Manifest
 import android.content.ContentValues
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
@@ -25,8 +26,19 @@ import androidx.camera.video.Quality
 import androidx.camera.video.QualitySelector
 import androidx.camera.video.VideoRecordEvent
 import androidx.core.content.PermissionChecker
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody
+import okhttp3.Response
+import java.io.File
+import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Locale
+import java.util.concurrent.TimeUnit
 
 
 class MainActivity : AppCompatActivity() {
@@ -35,6 +47,12 @@ class MainActivity : AppCompatActivity() {
     private var recording: Recording? = null
 
     private lateinit var cameraExecutor: ExecutorService
+    private var client = OkHttpClient.Builder()
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .build()
+
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -109,6 +127,9 @@ class MainActivity : AppCompatActivity() {
                                 "Video capture succeeded: ${recordEvent.outputResults.outputUri}"
                             Toast.makeText(baseContext, msg, Toast.LENGTH_SHORT).show()
                             Log.d(TAG, msg)
+
+                            //Upload the video
+                            uploadVideo(recordEvent.outputResults.outputUri)
                         } else {
                             recording?.close()
                             recording = null
@@ -121,6 +142,74 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             }
+    }private fun uploadVideo(videoUri: Uri) {
+        Log.d(TAG, "Starting upload for video URI: $videoUri")
+
+        try {
+            val tempFile = File(cacheDir, "temp_video.mp4")
+            contentResolver.openInputStream(videoUri)?.use { input ->
+                tempFile.outputStream().use { output ->
+                    input.copyTo(output)
+                }
+            }
+
+            Log.d(TAG, "Copied video to temporary file: ${tempFile.absolutePath}")
+            Log.d(TAG, "Temporary file size: ${tempFile.length()} bytes")
+
+            val requestBody = RequestBody.create("video/mp4".toMediaType(), tempFile)
+
+
+            val boardId = "100100100"
+            Log.d(TAG, "Using board ID: $boardId")
+
+            val body = MultipartBody.Builder().setType(MultipartBody.FORM)
+                .addFormDataPart("video", "video.mp4", requestBody)
+                .build()
+            Log.d(TAG, "Created multipart request body")
+
+            val request = Request.Builder()
+                .url("https://e720-111-65-39-90.ngrok-free.app/video_processing/upload/")
+                .header("X-Token", boardId)
+                .post(body)
+                .build()
+            Log.d(TAG, "Built request with URL: ${request.url} and headers: ${request.headers}")
+
+            Log.d(TAG, "Sending upload request")
+            client.newCall(request).enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    Log.e(TAG, "Network failure during upload", e)
+                    runOnUiThread {
+                        Toast.makeText(baseContext, "Upload failed: ${e.message}", Toast.LENGTH_LONG).show()
+                    }
+                    tempFile.delete()
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    response.use {
+                        val responseBody = response.body?.string()
+                        Log.d(TAG, "Server response: ${response.code} ${response.message}")
+                        Log.d(TAG, "Response body: $responseBody")
+                        if (response.isSuccessful) {
+                            Log.d(TAG, "Upload successful. Response code: ${response.code}")
+                            runOnUiThread {
+                                Toast.makeText(baseContext, "Video uploaded successfully", Toast.LENGTH_SHORT).show()
+                            }
+                        } else {
+                            Log.e(TAG, "Server error during upload. Code: ${response.code}")
+                            runOnUiThread {
+                                Toast.makeText(baseContext, "Upload failed: ${response.code} ${response.message}", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    }
+                    tempFile.delete()
+                }
+            })
+        } catch (e: Exception) {
+            Log.e(TAG, "Exception during upload process", e)
+            runOnUiThread {
+                Toast.makeText(baseContext, "Upload failed: ${e.message}", Toast.LENGTH_LONG).show()
+            }
+        }
     }
     private fun startCamera(){
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
