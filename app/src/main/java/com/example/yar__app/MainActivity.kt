@@ -7,7 +7,6 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.Environment
 import android.provider.MediaStore
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.video.Recorder
@@ -27,6 +26,8 @@ import androidx.camera.video.Quality
 import androidx.camera.video.QualitySelector
 import androidx.camera.video.VideoRecordEvent
 import androidx.core.content.PermissionChecker
+import androidx.media3.common.MediaItem
+import androidx.media3.exoplayer.ExoPlayer
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
@@ -36,7 +37,6 @@ import okhttp3.Request
 import okhttp3.RequestBody
 import okhttp3.Response
 import java.io.File
-import java.io.FileOutputStream
 import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -54,13 +54,12 @@ class MainActivity : AppCompatActivity() {
         .writeTimeout(60, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .build()
-
+    private lateinit var player: ExoPlayer
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         viewBinding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(viewBinding.root)
-
         // request camera persissions
         if(allPermissionsGranted()){
             startCamera()
@@ -70,6 +69,7 @@ class MainActivity : AppCompatActivity() {
         // settting up listeners for video capture button
         viewBinding.captureBtn.setOnClickListener { captureVideo() }
 
+        player = ExoPlayer.Builder(this).build()
 
         cameraExecutor = Executors.newSingleThreadExecutor()
 
@@ -145,6 +145,7 @@ class MainActivity : AppCompatActivity() {
                 }
             }
     }
+    @OptIn(ExperimentalStdlibApi::class)
     private fun uploadVideo(videoUri: Uri) {
         Log.d(TAG, "Starting upload for video URI: $videoUri")
 
@@ -171,7 +172,7 @@ class MainActivity : AppCompatActivity() {
             Log.d(TAG, "Created multipart request body")
 
             val request = Request.Builder()
-                .url("https://e720-111-65-39-90.ngrok-free.app/video_processing/upload/")
+                .url("https://e255-155-69-183-21.ngrok-free.app/video_processing/upload/")
                 .header("X-Token", boardId)
                 .post(body)
                 .build()
@@ -188,28 +189,35 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 override fun onResponse(call: Call, response: Response) {
-                    response.use {
-                        val responseBody = response.body?.string()
-                        Log.d(TAG, "Server response: ${response.code} ${response.message}")
-                        Log.d(TAG, "Response body: $responseBody")
-                        if (response.isSuccessful) {
-                            Log.d(TAG, "Upload successful. Response code: ${response.code}")
-                            if(response.header("Content-Type") == "audio/mpeg"){
-                                saveAudioFromResponse(response)
-                            }else{
-                                Log.e(TAG, "Unexpected content type Code: ${response.code}")
+                    if (response.isSuccessful) {
+                        val contentType = response.header("Content-Type")
+                        Log.d(TAG, "Response Content-Type: $contentType")
+
+                        if (contentType == "audio/mpeg") {
+                            // Clone the response body to ensure we can read it multiple times
+                            val responseBody = response.body?.bytes()
+                            if (responseBody != null) {
+                                // Log the first few bytes of the response for debugging
+                                val preview = responseBody.take(100).toByteArray().toHexString()
+                                Log.d(TAG, "Response body preview: $preview")
+
+                                saveAndPlayAudio(responseBody)
+                            } else {
+                                Log.e(TAG, "Response body is null")
                                 runOnUiThread {
-                                    Toast.makeText(baseContext, "Received unexpected content type: ${response.code} ${response.message}", Toast.LENGTH_LONG).show()
+                                    Toast.makeText(baseContext, "Failed to receive audio data", Toast.LENGTH_LONG).show()
                                 }
                             }
-                            runOnUiThread {
-                                Toast.makeText(baseContext, "Video uploaded successfully", Toast.LENGTH_SHORT).show()
-                            }
                         } else {
-                            Log.e(TAG, "Server error during upload. Code: ${response.code}")
+                            Log.e(TAG, "Unexpected content type: $contentType")
                             runOnUiThread {
-                                Toast.makeText(baseContext, "Upload failed: ${response.code} ${response.message}", Toast.LENGTH_LONG).show()
+                                Toast.makeText(baseContext, "Received unexpected content type: $contentType", Toast.LENGTH_LONG).show()
                             }
+                        }
+                    } else {
+                        Log.e(TAG, "Server error during upload. Code: ${response.code}")
+                        runOnUiThread {
+                            Toast.makeText(baseContext, "Upload failed: ${response.code} ${response.message}", Toast.LENGTH_LONG).show()
                         }
                     }
                     tempFile.delete()
@@ -248,53 +256,52 @@ class MainActivity : AppCompatActivity() {
             }
         },ContextCompat.getMainExecutor((this)))
     }
-    private fun saveAudioFromResponse(response: Response){
-        val fileName = "audio_${System.currentTimeMillis()}.mp3"
-        try{
-            if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q){
-                val contentValues = ContentValues().apply {
-                    put(MediaStore.MediaColumns.DISPLAY_NAME,fileName)
-                    put(MediaStore.MediaColumns.MIME_TYPE,"audio/mpeg")
-                    put(MediaStore.MediaColumns.RELATIVE_PATH,Environment.DIRECTORY_MUSIC)
-                }
+    private fun saveAndPlayAudio(audioData: ByteArray) {
+        try {
+            val file = File(getExternalFilesDir(null), "downloaded_audio.mp3")
+            file.writeBytes(audioData)
+            val audioUri = Uri.fromFile(file)
 
-                val resolver = applicationContext.contentResolver
-                val uri = resolver.insert(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, contentValues)
 
-                uri?.let {
-                    resolver.openOutputStream(it)?.use { outputStream ->
-                        response.body?.byteStream()?.use { inputStream ->
-                            inputStream.copyTo(outputStream)
-                        }
-                    }
-                    Log.d(TAG, "Audio saved successfully: $uri")
-                    runOnUiThread {
-                        Toast.makeText(baseContext, "Audio saved successfully", Toast.LENGTH_SHORT).show()
-                    }
-                }
-            } else {
-            val file = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC), fileName)
-            FileOutputStream(file).use { outputStream ->
-                response.body?.byteStream()?.use { inputStream ->
-                    inputStream.copyTo(outputStream)
-                }
-            }
-            Log.d(TAG, "Audio saved successfully: ${file.absolutePath}")
+            // Once the audio file is saved, play it
             runOnUiThread {
-                Toast.makeText(baseContext, "Audio saved successfully", Toast.LENGTH_SHORT).show()
+                playAudio(audioUri)
+                Toast.makeText(baseContext, "Audio saved and playing", Toast.LENGTH_SHORT).show()
+
+            }
+
+        } catch (e: IOException) {
+            Log.e(TAG, "Error saving or playing audio", e)
+            runOnUiThread {
+                Toast.makeText(baseContext, "Error saving or playing audio: ${e.message}", Toast.LENGTH_SHORT).show()
             }
         }
-        }catch(e: IOException){
-            Log.e(TAG,"Error saving audio file",e)
+    }
 
+    private fun playAudio(uri:Uri){
+        try {
+            player.stop()
+            player.clearMediaItems()
+
+            val mediaItem = MediaItem.fromUri(uri)
+            player.setMediaItem(mediaItem)
+            player.prepare()
+            player.play()
+
+            Log.d(TAG, "Playing audio from URI: $uri")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error playing audio file", e)
+            runOnUiThread {
+                Toast.makeText(baseContext, "Error playing audio: ${e.message}", Toast.LENGTH_SHORT).show()
+            }
         }
-
     }
     private fun requestPermissions(){
         activityResultLauncher.launch(REQUIRED_PERMISSIONS)
     }
     override fun onDestroy() {
         super.onDestroy()
+        player.release()
         cameraExecutor.shutdown()
     }
     private val activityResultLauncher =
