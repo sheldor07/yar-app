@@ -2,11 +2,13 @@ package com.example.yar__app
 
 import com.example.yar__app.databinding.ActivityMainBinding
 import android.Manifest
+import android.content.ContentValues
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.MediaStore
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.video.Recorder
 import androidx.camera.video.Recording
@@ -23,7 +25,7 @@ import android.view.Gravity
 import android.view.KeyEvent
 import android.widget.FrameLayout
 import android.widget.TextView
-import androidx.camera.video.FileOutputOptions
+import androidx.camera.video.MediaStoreOutputOptions
 import androidx.camera.video.Quality
 import androidx.camera.video.QualitySelector
 import androidx.camera.video.VideoRecordEvent
@@ -141,12 +143,21 @@ class MainActivity : AppCompatActivity() {
                 return
             }
             logAndDisplay("Preparing to start recording")
-            val videoFile = createFile(getOutputDirectory())
-            logAndDisplay("Video will be saved to: $videoFile")
-            val outputOptions = FileOutputOptions.Builder(videoFile).build()
+            val name = "CameraX-recording-" +
+                    SimpleDateFormat(FILENAME_FORMAT, Locale.US)
+                        .format(System.currentTimeMillis()) + ".mp4"
+            val contentValues = ContentValues().apply {
+                put(MediaStore.Video.Media.DISPLAY_NAME, name)
+            }
+            val mediaStoreOutput = MediaStoreOutputOptions.Builder(
+                contentResolver,
+                MediaStore.Video.Media.EXTERNAL_CONTENT_URI)
+                .setContentValues(contentValues)
+                .build()
+
             isRecording.set(true)
             recording = videoCapture.output
-                .prepareRecording(this, outputOptions)
+                .prepareRecording(this, mediaStoreOutput)
                 .apply {
                     if (PermissionChecker.checkSelfPermission(
                             this@MainActivity,
@@ -372,15 +383,6 @@ class MainActivity : AppCompatActivity() {
         player.release()
         cameraExecutor.shutdown()
     }
-
-    private fun getOutputDirectory(): File{
-        val mediaDir = externalMediaDirs.firstOrNull()?.let{
-            File(it, resources.getString(R.string.app_name)).apply { mkdirs() }
-        }
-        return if(mediaDir!=null && mediaDir.exists()) mediaDir else filesDir
-    }
-    private fun createFile(baseFolder:File, format:String = FILENAME_FORMAT, extension:String = ".mp4") =
-        File(baseFolder,SimpleDateFormat(format, Locale.US).format(System.currentTimeMillis())+extension)
     companion object {
         private const val TAG = "yarApp"
         private const val FILENAME_FORMAT = "yyyy-MM-dd-HH-mm-ss-SSS"
