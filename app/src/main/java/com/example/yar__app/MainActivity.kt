@@ -23,6 +23,7 @@ import android.util.Log
 import android.view.Gravity
 import android.widget.FrameLayout
 import android.widget.TextView
+import androidx.activity.OnBackPressedCallback
 import androidx.camera.video.FileOutputOptions
 import androidx.camera.video.Quality
 import androidx.camera.video.QualitySelector
@@ -64,7 +65,12 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         viewBinding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(viewBinding.root)
-
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                logAndDisplay("Hardware key 139 pressed (new method)")
+                captureVideo()
+            }
+        })
         // Add debugTextView to the layout
         debugTextView = TextView(this)
         debugTextView.setTextColor(Color.WHITE)
@@ -90,18 +96,19 @@ class MainActivity : AppCompatActivity() {
         cameraExecutor = Executors.newSingleThreadExecutor()
 
     }
+
     private fun logAndDisplay(message: String) {
         Log.d(TAG, message)
-        runOnUiThread {
-            debugTextView.append("$message\n")
-            // Scroll to the bottom
-            val scrollAmount = debugTextView.layout.getLineTop(debugTextView.lineCount) - debugTextView.height
-            if (scrollAmount > 0) {
-                debugTextView.scrollTo(0, scrollAmount)
-            } else {
-                debugTextView.scrollTo(0, 0)
-            }
-        }
+//        runOnUiThread {
+//            debugTextView.append("$message\n")
+//            // Scroll to the bottom
+//            val scrollAmount = debugTextView.layout.getLineTop(debugTextView.lineCount) - debugTextView.height
+//            if (scrollAmount > 0) {
+//                debugTextView.scrollTo(0, scrollAmount)
+//            } else {
+//                debugTextView.scrollTo(0, 0)
+//            }
+//        }
     }
 
     private fun allPermissionsGranted() = REQUIRED_PERMISSIONS.all {
@@ -203,8 +210,9 @@ class MainActivity : AppCompatActivity() {
             Log.d(TAG, "Created multipart request body")
 
             val request = Request.Builder()
-                .url("https://0a27-111-65-39-70.ngrok-free.app/video_processing/upload/")
+                .url("https://9818-194-61-40-15.ngrok-free.app/video_processing/upload/")
                 .header("X-Token", boardId)
+                .header("X-Device-Type", "android")
                 .post(body)
                 .build()
             Log.d(TAG, "Built request with URL: ${request.url} and headers: ${request.headers}")
