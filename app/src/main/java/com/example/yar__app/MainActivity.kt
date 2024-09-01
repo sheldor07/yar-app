@@ -7,7 +7,6 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.StatFs
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.video.Recorder
 import androidx.camera.video.Recording
@@ -21,6 +20,7 @@ import androidx.camera.core.Preview
 import androidx.camera.core.CameraSelector
 import android.util.Log
 import android.view.Gravity
+import android.view.KeyEvent
 import android.widget.FrameLayout
 import android.widget.TextView
 import androidx.camera.video.FileOutputOptions
@@ -40,10 +40,13 @@ import okhttp3.Request
 import okhttp3.RequestBody
 import okhttp3.Response
 import java.io.File
+import java.io.FileWriter
 import java.io.IOException
 import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 
 class MainActivity : AppCompatActivity() {
@@ -59,6 +62,13 @@ class MainActivity : AppCompatActivity() {
         .build()
     private lateinit var player: ExoPlayer
     private lateinit var debugTextView: TextView
+
+    private var isRecording = AtomicBoolean(false)
+    private var isPreparingRecord = AtomicBoolean(false)
+    private var debounceTime = 500L
+    private var lastActionTime = 0L
+
+    private lateinit var logFile: File
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -83,17 +93,27 @@ class MainActivity : AppCompatActivity() {
             requestPermissions()
         }
         // setting up listeners for video capture button
-        viewBinding.captureBtn.setOnClickListener { captureVideo() }
 
         player = ExoPlayer.Builder(this).build()
 
         cameraExecutor = Executors.newSingleThreadExecutor()
+        logFile = File(getExternalFilesDir(null), "app_log.txt")
 
     }
     private fun logAndDisplay(message: String) {
         Log.d(TAG, message)
+        val timestamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()).format(Date())
+        val logMessage = "[$timestamp] $message"
+        try {
+            FileWriter(logFile, true).use { writer ->
+                writer.append(logMessage).append("\n")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error writing to log file", e)
+        }
+
         runOnUiThread {
-            debugTextView.append("$message\n")
+            debugTextView.append("$logMessage\n")
             // Scroll to the bottom
             val scrollAmount = debugTextView.layout.getLineTop(debugTextView.lineCount) - debugTextView.height
             if (scrollAmount > 0) {
@@ -108,38 +128,32 @@ class MainActivity : AppCompatActivity() {
         ContextCompat.checkSelfPermission(
             baseContext, it) == PackageManager.PERMISSION_GRANTED
     }
-    private fun captureVideo() {
-        logAndDisplay("Capture button pressed")
-        val videoCapture = this.videoCapture
-        if (videoCapture == null) {
-            logAndDisplay("VideoCapture is null, returning")
-            return
-        }
-
-        viewBinding.captureBtn.isEnabled = false
-
-        val curRecording = recording
-        if (curRecording != null) {
-            logAndDisplay("Stopping current recording")
-            curRecording.stop()
-            recording = null
-        } else {
-            logAndDisplay("Starting new recording")
-        val availableStorage = getAvailableInternalMemorySize()
-            logAndDisplay("Available storage : $availableStorage bytes")
-            if(availableStorage< 10*1024*1024){
-                logAndDisplay("Not enough storage")
-                viewBinding.captureBtn.isEnabled = true
+    private fun startVideoCapture() {
+        try {
+            logAndDisplay("Capture button pressed")
+            if (isRecording.get() || isPreparingRecord.get()) {
+                logAndDisplay("Already recording, ignoring start request")
                 return
             }
-
+            isPreparingRecord.set(true)
+            logAndDisplay("Preparing to start recording")
+            val videoCapture = this.videoCapture
+            if (videoCapture == null) {
+                logAndDisplay("VideoCapture is null, returning")
+                return
+            }
+            logAndDisplay("Preparing to start recording")
             val videoFile = createFile(getOutputDirectory())
             logAndDisplay("Video will be saved to: $videoFile")
             val outputOptions = FileOutputOptions.Builder(videoFile).build()
+
             recording = videoCapture.output
                 .prepareRecording(this, outputOptions)
                 .apply {
-                    if (PermissionChecker.checkSelfPermission(this@MainActivity, Manifest.permission.RECORD_AUDIO) ==
+                    if (PermissionChecker.checkSelfPermission(
+                            this@MainActivity,
+                            Manifest.permission.RECORD_AUDIO
+                        ) ==
                         PermissionChecker.PERMISSION_GRANTED
                     ) {
                         withAudioEnabled()
@@ -149,15 +163,17 @@ class MainActivity : AppCompatActivity() {
                     when (recordEvent) {
                         is VideoRecordEvent.Start -> {
                             logAndDisplay("Recording started")
-                            viewBinding.captureBtn.apply {
-                                text = getString(R.string.stop_capture)
-                                isEnabled = true
-                            }
+                            isRecording.set(true)
+                            isPreparingRecord.set(false)
+                            lastActionTime = System.currentTimeMillis()
                         }
+
+
                         is VideoRecordEvent.Finalize -> {
                             if (!recordEvent.hasError()) {
                                 logAndDisplay("Recording stopped successfully")
-                                val msg = "Video capture succeeded: ${recordEvent.outputResults.outputUri}"
+                                val msg =
+                                    "Video capture succeeded: ${recordEvent.outputResults.outputUri}"
                                 logAndDisplay(msg)
                                 uploadVideo(recordEvent.outputResults.outputUri)  // Don't forget to call this
                             } else {
@@ -166,15 +182,40 @@ class MainActivity : AppCompatActivity() {
                                 logAndDisplay("Video capture failed: ${recordEvent.error}")
                                 logAndDisplay("Error details: ${recordEvent.cause?.message}")
                             }
-                            viewBinding.captureBtn.text = getString(R.string.start_capture)
+                            isRecording.set(false)
+                            isPreparingRecord.set(false)
                         }
                     }
-                    viewBinding.captureBtn.isEnabled = true
+
                 }
+        }catch (e:Exception){
+            logAndDisplay("Error clicking camera button ${e.message}")
+            isRecording.set(false)
         }
-    }private fun getAvailableInternalMemorySize(): Long {
-        val stat = StatFs(filesDir.path)
-        return stat.availableBlocksLong * stat.blockSizeLong
+
+
+
+    }private fun stopVideoCapture(){
+        try{
+            if(!isRecording.get() && !isPreparingRecord.get()){
+                logAndDisplay("Not recording, ignoring stop request")
+                return
+            }
+            logAndDisplay("Stopping video capture")
+            val curRecording = recording
+            if(curRecording != null && isRecording.get()){
+                logAndDisplay("Stopping current recording")
+                curRecording.stop()
+                recording = null
+            }else if (isPreparingRecord.get()) {
+                logAndDisplay("Recording was still preparing, cancelling preparation")
+                isPreparingRecord.set(false)
+            }
+        }catch (e: Exception){
+            logAndDisplay("Error in stopVideoCapture: ${e.message}")
+            isRecording.set(false)
+        }
+
     }
     @OptIn(ExperimentalStdlibApi::class)
     private fun uploadVideo(videoUri: Uri) {
@@ -203,8 +244,9 @@ class MainActivity : AppCompatActivity() {
             Log.d(TAG, "Created multipart request body")
 
             val request = Request.Builder()
-                .url("https://0a27-111-65-39-70.ngrok-free.app/video_processing/upload/")
+                .url("https://9818-194-61-40-15.ngrok-free.app/video_processing/upload/")
                 .header("X-Token", boardId)
+                .header("X-Device-Type", "android")
                 .post(body)
                 .build()
             Log.d(TAG, "Built request with URL: ${request.url} and headers: ${request.headers}")
@@ -359,5 +401,59 @@ class MainActivity : AppCompatActivity() {
                 }
             }.toTypedArray()
     }
+
+    private fun logBtnEvent(keyCode: Int, event: KeyEvent) {
+        try {
+            val action = when (event.action) {
+                KeyEvent.ACTION_DOWN -> "pressed"
+                KeyEvent.ACTION_UP -> "released"
+                else -> "unknown action"
+            }
+            val keyCodeName = when (keyCode) {
+                KeyEvent.KEYCODE_BUTTON_B -> "KEYCODE_BUTTON_B (139)"
+                KeyEvent.KEYCODE_BACK -> "KEYCODE_BACK (4)"
+                else -> "Unknown ($keyCode)"
+            }
+            logAndDisplay("Button event: $keyCodeName, action=$action, device=${event.device?.name}")
+        } catch (e: Exception) {
+            logAndDisplay("Error in logButtonEvent: ${e.message}")
+        }
+    }
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        logBtnEvent(keyCode, event)
+        try{
+            if (keyCode == 25 && event.device?.name != "Virtual") {
+                logAndDisplay("Button pressed, scheduling video capture start")
+                startVideoCapture()
+                return super.onKeyDown(keyCode, event)
+
+            }else{
+                logBtnEvent(keyCode, event)
+            }
+        }catch(e: Exception){
+            logAndDisplay("Error in onKeyDown $e")
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
+        try{
+            logBtnEvent(keyCode, event)
+
+            if (keyCode == 25 && event.device?.name != "Virtual") {
+                logAndDisplay("Button released, scheduling video capture stop")
+                if (System.currentTimeMillis() - lastActionTime >= debounceTime) {
+                    stopVideoCapture()
+                } else {
+                    logAndDisplay("Recording too short, continuing to record")
+                }
+                return super.onKeyUp(keyCode, event)
+            }
+        }catch (e:Exception){
+            logAndDisplay("Error in onKeyUp $e")
+        }
+        return super.onKeyUp(keyCode, event)
+    }
+
 
 }
