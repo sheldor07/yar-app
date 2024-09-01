@@ -64,8 +64,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var debugTextView: TextView
 
     private var isRecording = AtomicBoolean(false)
-    private var isPreparingRecord = AtomicBoolean(false)
-    private var debounceTime = 500L
+    private var debounceTime = 1000L
     private var lastActionTime = 0L
 
     private lateinit var logFile: File
@@ -131,11 +130,10 @@ class MainActivity : AppCompatActivity() {
     private fun startVideoCapture() {
         try {
             logAndDisplay("Capture button pressed")
-            if (isRecording.get() || isPreparingRecord.get()) {
+            if (isRecording.get()) {
                 logAndDisplay("Already recording, ignoring start request")
                 return
             }
-            isPreparingRecord.set(true)
             logAndDisplay("Preparing to start recording")
             val videoCapture = this.videoCapture
             if (videoCapture == null) {
@@ -146,7 +144,7 @@ class MainActivity : AppCompatActivity() {
             val videoFile = createFile(getOutputDirectory())
             logAndDisplay("Video will be saved to: $videoFile")
             val outputOptions = FileOutputOptions.Builder(videoFile).build()
-
+            isRecording.set(true)
             recording = videoCapture.output
                 .prepareRecording(this, outputOptions)
                 .apply {
@@ -163,8 +161,6 @@ class MainActivity : AppCompatActivity() {
                     when (recordEvent) {
                         is VideoRecordEvent.Start -> {
                             logAndDisplay("Recording started")
-                            isRecording.set(true)
-                            isPreparingRecord.set(false)
                             lastActionTime = System.currentTimeMillis()
                         }
 
@@ -183,7 +179,6 @@ class MainActivity : AppCompatActivity() {
                                 logAndDisplay("Error details: ${recordEvent.cause?.message}")
                             }
                             isRecording.set(false)
-                            isPreparingRecord.set(false)
                         }
                     }
 
@@ -197,19 +192,18 @@ class MainActivity : AppCompatActivity() {
 
     }private fun stopVideoCapture(){
         try{
-            if(!isRecording.get() && !isPreparingRecord.get()){
+            if(!isRecording.get()){
                 logAndDisplay("Not recording, ignoring stop request")
                 return
             }
+
             logAndDisplay("Stopping video capture")
             val curRecording = recording
             if(curRecording != null && isRecording.get()){
                 logAndDisplay("Stopping current recording")
                 curRecording.stop()
                 recording = null
-            }else if (isPreparingRecord.get()) {
-                logAndDisplay("Recording was still preparing, cancelling preparation")
-                isPreparingRecord.set(false)
+                isRecording.set(false)
             }
         }catch (e: Exception){
             logAndDisplay("Error in stopVideoCapture: ${e.message}")
@@ -422,9 +416,13 @@ class MainActivity : AppCompatActivity() {
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         logBtnEvent(keyCode, event)
         try{
-            if (keyCode == 25 && event.device?.name != "Virtual") {
-                logAndDisplay("Button pressed, scheduling video capture start")
-                startVideoCapture()
+            if (keyCode == 139 && event.device?.name != "Virtual") {
+                val currentTime = System.currentTimeMillis()
+                if (currentTime - lastActionTime >= debounceTime) {
+                    lastActionTime = currentTime
+                    logAndDisplay("Button pressed")
+                    toggleRecording()
+                }
                 return super.onKeyDown(keyCode, event)
 
             }else{
@@ -435,24 +433,14 @@ class MainActivity : AppCompatActivity() {
         }
         return super.onKeyDown(keyCode, event)
     }
-
-    override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
-        try{
-            logBtnEvent(keyCode, event)
-
-            if (keyCode == 25 && event.device?.name != "Virtual") {
-                logAndDisplay("Button released, scheduling video capture stop")
-                if (System.currentTimeMillis() - lastActionTime >= debounceTime) {
-                    stopVideoCapture()
-                } else {
-                    logAndDisplay("Recording too short, continuing to record")
-                }
-                return super.onKeyUp(keyCode, event)
-            }
-        }catch (e:Exception){
-            logAndDisplay("Error in onKeyUp $e")
+    private fun toggleRecording() {
+        if (isRecording.get()) {
+            logAndDisplay("Stopping video capture")
+            stopVideoCapture()
+        } else {
+            logAndDisplay("Starting video capture")
+            startVideoCapture()
         }
-        return super.onKeyUp(keyCode, event)
     }
 
 
