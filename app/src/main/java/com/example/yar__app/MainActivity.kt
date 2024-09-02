@@ -4,6 +4,7 @@ import com.example.yar__app.databinding.ActivityMainBinding
 import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -60,6 +61,14 @@ class MainActivity : AppCompatActivity() {
         .build()
     private lateinit var player: ExoPlayer
     private lateinit var debugTextView: TextView
+    private var isUploading = false
+
+    private lateinit var startSound: MediaPlayer
+    private lateinit var stopSound: MediaPlayer
+    private lateinit var loadingSound: MediaPlayer
+    private lateinit var loadingVoice : MediaPlayer
+
+    private var loadingSoundPlayCount = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -94,7 +103,31 @@ class MainActivity : AppCompatActivity() {
         player = ExoPlayer.Builder(this).build()
 
         cameraExecutor = Executors.newSingleThreadExecutor()
+        initializeSounds()
 
+    }
+
+    private fun initializeSounds() {
+        startSound = MediaPlayer.create(this, R.raw.start_sound)
+        stopSound = MediaPlayer.create(this, R.raw.stop_sound)
+        loadingVoice = MediaPlayer.create(this, R.raw.loading_voice)
+        loadingSound = MediaPlayer.create(this, R.raw.loading_sounds)
+
+        // Set up completion listeners
+        startSound.setOnCompletionListener { it.release() }
+        stopSound.setOnCompletionListener { it.release() }
+        loadingVoice.setOnCompletionListener {
+            it.release()
+            if (isUploading) playLoadingSound()
+        }
+        loadingSound.setOnCompletionListener {
+            if (isUploading) {
+                it.seekTo(0)
+                it.start()
+            } else {
+                it.release()
+            }
+        }
     }
 
     private fun logAndDisplay(message: String) {
@@ -129,17 +162,18 @@ class MainActivity : AppCompatActivity() {
         if (curRecording != null) {
             logAndDisplay("Stopping current recording")
             curRecording.stop()
+            playStopSound()
             recording = null
         } else {
             logAndDisplay("Starting new recording")
-        val availableStorage = getAvailableInternalMemorySize()
+            playStartSound()
+            val availableStorage = getAvailableInternalMemorySize()
             logAndDisplay("Available storage : $availableStorage bytes")
             if(availableStorage< 10*1024*1024){
                 logAndDisplay("Not enough storage")
                 viewBinding.captureBtn.isEnabled = true
                 return
             }
-
             val videoFile = createFile(getOutputDirectory())
             logAndDisplay("Video will be saved to: $videoFile")
             val outputOptions = FileOutputOptions.Builder(videoFile).build()
@@ -179,14 +213,16 @@ class MainActivity : AppCompatActivity() {
                     viewBinding.captureBtn.isEnabled = true
                 }
         }
-    }private fun getAvailableInternalMemorySize(): Long {
+    }
+    private fun getAvailableInternalMemorySize(): Long {
         val stat = StatFs(filesDir.path)
         return stat.availableBlocksLong * stat.blockSizeLong
     }
     @OptIn(ExperimentalStdlibApi::class)
     private fun uploadVideo(videoUri: Uri) {
         Log.d(TAG, "Starting upload for video URI: $videoUri")
-
+        isUploading = true
+        startLoadingSoundPattern()
         try {
             val tempFile = File(cacheDir, "temp_video.mp4")
             contentResolver.openInputStream(videoUri)?.use { input ->
@@ -210,7 +246,7 @@ class MainActivity : AppCompatActivity() {
             Log.d(TAG, "Created multipart request body")
 
             val request = Request.Builder()
-                .url("https://9818-194-61-40-15.ngrok-free.app/video_processing/upload/")
+                .url("http://13.200.53.107:8000/video_processing/upload/")
                 .header("X-Token", boardId)
                 .header("X-Device-Type", "android")
                 .post(body)
@@ -218,6 +254,7 @@ class MainActivity : AppCompatActivity() {
             Log.d(TAG, "Built request with URL: ${request.url} and headers: ${request.headers}")
 
             Log.d(TAG, "Sending upload request")
+
             client.newCall(request).enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
                     Log.e(TAG, "Network failure during upload", e)
@@ -225,10 +262,14 @@ class MainActivity : AppCompatActivity() {
                         Toast.makeText(baseContext, "Upload failed: ${e.message}", Toast.LENGTH_LONG).show()
                     }
                     tempFile.delete()
+                    isUploading = false
+                    stopLoadingSoundPattern()
                 }
+
 
                 override fun onResponse(call: Call, response: Response) {
                     if (response.isSuccessful) {
+                        isUploading = false
                         val contentType = response.header("Content-Type")
                         Log.d(TAG, "Response Content-Type: $contentType")
 
@@ -301,6 +342,7 @@ class MainActivity : AppCompatActivity() {
             file.writeBytes(audioData)
             val audioUri = Uri.fromFile(file)
 
+            stopLoadingSoundPattern()
 
             // Once the audio file is saved, play it
             runOnUiThread {
@@ -344,7 +386,6 @@ class MainActivity : AppCompatActivity() {
         player.release()
         cameraExecutor.shutdown()
     }
-
     private fun getOutputDirectory(): File{
         val mediaDir = externalMediaDirs.firstOrNull()?.let{
             File(it, resources.getString(R.string.app_name)).apply { mkdirs() }
@@ -353,6 +394,57 @@ class MainActivity : AppCompatActivity() {
     }
     private fun createFile(baseFolder:File, format:String = FILENAME_FORMAT, extension:String = ".mp4") =
         File(baseFolder,SimpleDateFormat(format, Locale.US).format(System.currentTimeMillis())+extension)
+    private fun playStartSound() {
+        startSound = MediaPlayer.create(this, R.raw.start_sound)
+        startSound.setOnCompletionListener { it.release() }
+        startSound.start()
+    }
+
+    private fun playStopSound() {
+        stopSound = MediaPlayer.create(this, R.raw.stop_sound)
+        stopSound.setOnCompletionListener { it.release() }
+        stopSound.start()
+    }
+    // This function should be called to start the specific sound pattern
+    private fun startLoadingSoundPattern() {
+        isUploading = true
+        loadingSoundPlayCount = 0
+        playLoadingSound()
+    }
+
+    // This function should be called to stop the sound pattern
+    private fun stopLoadingSoundPattern() {
+        isUploading = false
+        loadingSoundPlayCount = 0
+        loadingSound.release()
+        loadingVoice.release()
+    }
+
+    private fun playLoadingSound() {
+        loadingSound = MediaPlayer.create(this, R.raw.loading_sounds)
+        loadingSound.setOnCompletionListener {
+            it.release()
+            loadingSoundPlayCount++
+            if (isUploading) {
+                if (loadingSoundPlayCount < 2) {
+                    playLoadingSound()
+                } else {
+                    loadingSoundPlayCount = 0
+                    playLoadingVoice()
+                }
+            }
+        }
+        loadingSound.start()
+    }
+
+    private fun playLoadingVoice() {
+        loadingVoice = MediaPlayer.create(this, R.raw.loading_voice)
+        loadingVoice.setOnCompletionListener {
+            it.release()
+            if (isUploading) playLoadingSound()
+        }
+        loadingVoice.start()
+    }
     companion object {
         private const val TAG = "yarApp"
         private const val FILENAME_FORMAT = "yyyy-MM-dd-HH-mm-ss-SSS"
